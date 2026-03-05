@@ -4,13 +4,13 @@ const { Pool } = require('pg')
 const app = express()
 app.use(express.json())
 
-// ✅ Render Postgres usually requires SSL/TLS
+// ✅ Render Postgres often requires SSL/TLS
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 })
 
-// ✅ Auto-create table + index on boot
+// ✅ Auto-create table + indexes on boot
 async function init() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS voucher_conversations (
@@ -28,7 +28,6 @@ async function init() {
     ON voucher_conversations (voucher, created_at DESC)
   `)
 
-  // avoid duplicate (same voucher in same conversation)
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS uq_voucher_conversation
     ON voucher_conversations (voucher, conversation_id)
@@ -42,19 +41,23 @@ init().catch((e) => {
   process.exit(1)
 })
 
-// --- simple API key guard ---
-function requireKey(req, res, next) {
-  const key = req.headers['x-api-key']
-  if (!process.env.API_KEY || key !== process.env.API_KEY) {
-    return res.status(401).json({ ok: false, error: 'Unauthorized' })
-  }
-  next()
+/**
+ * Optional: set this in Render env vars:
+ * BOTPRESS_INBOX_BASE_URL = "https://studio.botpress.cloud/.../conversations/"
+ * We will return: link = BASE + conversationId
+ */
+function buildConversationLink(conversationId) {
+  const base = String(process.env.BOTPRESS_INBOX_BASE_URL || '').trim()
+  if (!base || !conversationId) return null
+  // ensure base ends with /
+  const normalizedBase = base.endsWith('/') ? base : base + '/'
+  return normalizedBase + conversationId
 }
 
 app.get('/health', (_req, res) => res.json({ ok: true }))
 
-// 1) Track (POST) - writes history row, dedupes per (voucher, conversation_id)
-app.post('/track', requireKey, async (req, res) => {
+// 1) Track (PUBLIC) - write history row, dedupe per (voucher, conversation_id)
+app.post('/track', async (req, res) => {
   const voucher = String(req.body?.voucher ?? '').replace(/\D/g, '')
   const conversationId = String(req.body?.conversationId ?? '')
   const userId = req.body?.userId ? String(req.body.userId) : null
@@ -79,8 +82,8 @@ app.post('/track', requireKey, async (req, res) => {
   return res.json({ ok: true })
 })
 
-// 2) Search (POST) - reads voucher from BODY and returns full list
-app.post('/search', requireKey, async (req, res) => {
+// 2) Search (PUBLIC, POST) - reads voucher from BODY and returns full list + clickable links
+app.post('/search', async (req, res) => {
   const voucher = String(req.body?.voucher ?? '').replace(/\D/g, '')
   const limit = Math.min(Number(req.body?.limit ?? 50) || 50, 500)
 
@@ -99,25 +102,28 @@ app.post('/search', requireKey, async (req, res) => {
     [voucher, limit]
   )
 
+  const results = result.rows.map((r) => ({
+    voucher: r.voucher,
+    conversationId: r.conversation_id,
+    userId: r.user_id,
+    channel: r.channel,
+    date: r.created_at,
+    link: buildConversationLink(r.conversation_id)
+  }))
+
   return res.json({
     ok: true,
     voucher,
-    count: result.rows.length,
-    results: result.rows.map((r) => ({
-      voucher: r.voucher,
-      conversationId: r.conversation_id,
-      userId: r.user_id,
-      channel: r.channel,
-      date: r.created_at
-    }))
+    count: results.length,
+    results
   })
 })
 
-// 3) Cleanup (POST) - deletes rows older than 6 months
-app.post('/cleanup', requireKey, async (_req, res) => {
+// 3) Cleanup (PUBLIC) - deletes rows older than 4 months
+app.post('/cleanup', async (_req, res) => {
   const out = await pool.query(`
     DELETE FROM voucher_conversations
-    WHERE created_at < NOW() - INTERVAL '6 months'
+    WHERE created_at < NOW() - INTERVAL '4 months'
   `)
 
   return res.json({ ok: true, deleted: out.rowCount })
