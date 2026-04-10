@@ -47,11 +47,9 @@ init().catch((e) => {
  * We will return: link = BASE + conversationId
  */
 function buildConversationLink(conversationId) {
-  const base = String(process.env.BOTPRESS_INBOX_BASE_URL || '').trim()
-  if (!base || !conversationId) return null
-  // ensure base ends with /
-  const normalizedBase = base.endsWith('/') ? base : base + '/'
-  return normalizedBase + conversationId
+  if (!conversationId) return null
+
+  return `https://app.botpress.cloud/workspaces/wkspace_01JTN175DB7YF387F8Y5KFTR50/bots/e410af84-6baf-4fc7-9bd5-65064c314313/conversations?conversationId=${encodeURIComponent(conversationId)}`
 }
 
 app.get('/health', (_req, res) => res.json({ ok: true }))
